@@ -41,32 +41,6 @@ CREATE TABLE products (
 );
 
 CREATE TABLE invoices (
-    invoice_id INT AUTO_INCREMENT PRIMARY KEY,
-    customer_id INT, -- Can be null if anonymous
-    invoice_number VARCHAR(50) UNIQUE NOT NULL,
-    invoice_date DATE NOT NULL,
-    place_of_supply VARCHAR(255),
-    vehicle_number VARCHAR(50),
-    
-    subtotal DECIMAL(10,2),
-    gst_percentage DECIMAL(5,2),
-    gst_amount DECIMAL(10,2),
-    cgst_amount DECIMAL(10,2),
-    sgst_amount DECIMAL(10,2),
-    discount_type ENUM('%', 'flat') DEFAULT '%',
-    discount_value DECIMAL(10,2),
-    transport_charge DECIMAL(10,2),
-    total_amount DECIMAL(10,2),
-
-    created_by INT, -- user_id of the admin or cashier
-    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    payment_type ENUM('Cash', 'Online', 'Advance') DEFAULT 'Cash',
-    advance_amount DECIMAL(10,2) DEFAULT '0.00',
-    FOREIGN KEY (customer_id) REFERENCES customers(customer_id),
-    FOREIGN KEY (created_by) REFERENCES users(user_id)
-);
-
-CREATE TABLE invoices (
     -- Primary Identification
     invoice_id INT AUTO_INCREMENT PRIMARY KEY,
     invoice_number VARCHAR(50) UNIQUE NOT NULL,

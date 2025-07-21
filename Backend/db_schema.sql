@@ -1,3 +1,5 @@
+CREATE DATABASE billing_software;
+
 -- Create Users Table (Admin, Cashier, Customer)
 CREATE TABLE users (
     user_id INT AUTO_INCREMENT PRIMARY KEY,
@@ -41,13 +43,17 @@ CREATE TABLE products (
 );
 
 CREATE TABLE invoices (
+    -- Primary Identification
     invoice_id INT AUTO_INCREMENT PRIMARY KEY,
-    customer_id INT, -- Can be null if anonymous
     invoice_number VARCHAR(50) UNIQUE NOT NULL,
     invoice_date DATE NOT NULL,
+
+    -- Customer & Delivery Info
+    customer_id INT, -- Optional: can be null if anonymous
     place_of_supply VARCHAR(255),
     vehicle_number VARCHAR(50),
-    
+
+    -- Invoice Amounts
     subtotal DECIMAL(10,2),
     gst_percentage DECIMAL(5,2),
     gst_amount DECIMAL(10,2),
@@ -57,11 +63,15 @@ CREATE TABLE invoices (
     discount_value DECIMAL(10,2),
     transport_charge DECIMAL(10,2),
     total_amount DECIMAL(10,2),
-
-    created_by INT, -- user_id of the admin or cashier
+    created_by INT,
+    payment_type ENUM('Cash', 'Card', 'UPI') DEFAULT 'Cash',
+    payment_status ENUM('Full Payment', 'Advance') DEFAULT 'Full Payment',
+    advance_amount DECIMAL(10,2) DEFAULT 0.00,
+    due_date DATE NULL, -- Used only for Advance
+    payment_completion_status ENUM('Completed', 'Pending') DEFAULT 'Completed',
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-    payment_type ENUM('Cash', 'Online', 'Advance') DEFAULT 'Cash',
-    advance_amount DECIMAL(10,2) DEFAULT '0.00',
+    payment_settlement_date DATE DEFAULT NULL,
+
     FOREIGN KEY (customer_id) REFERENCES customers(customer_id),
     FOREIGN KEY (created_by) REFERENCES users(user_id)
 );
@@ -128,21 +138,3 @@ CREATE TABLE company_info (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
 );
-
-{/* Additional Un-used table */}
-{/* Additional Un-used table */}
-{/* Additional Un-used table */}
-{/* Additional Un-used table */}
-{/* Additional Un-used table */}
-{/* Additional Un-used table */}
-{/* Additional Un-used table */}
-{/* Additional Un-used table */}
-{/* Additional Un-used table */}
-
-ALTER TABLE products
-ADD COLUMN discount_price DECIMAL(10, 2) AS (
-  ROUND(price - (price * discount / 100), 2)
-) STORED;
-
-ALTER TABLE products
-ADD COLUMN discount DECIMAL(10,2) NOT NULL DEFAULT 0 CHECK (discount >= 0 AND discount <= 100);
