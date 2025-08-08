@@ -5,6 +5,39 @@ import { toWords } from "number-to-words";
 import axios from "axios";
 import API_BASE_URL from "../../Context/Api";
 
+// Helper to form a full logo URL if company_logo is just a file name:
+const getFullLogoUrl = (filename) => {
+  if (!filename) return null;
+  // This assumes your images are served at /uploads/
+  return filename.startsWith("http")
+    ? filename
+    : `${API_BASE_URL}/uploads/logos/${filename}`;
+};
+
+// Helper for robust image loading (returns promise that resolves with a dataURL)
+const fetchLogoDataUrl = async (logoUrl) => {
+  if (!logoUrl) return null;
+  try {
+    const resp = await fetch(logoUrl, { mode: "cors" });
+    if (!resp.ok) throw new Error("Image fetch failed");
+    const blob = await resp.blob();
+    return await new Promise((resolve) => {
+      const reader = new FileReader();
+      reader.onloadend = () => resolve(reader.result);
+      reader.readAsDataURL(blob);
+    });
+  } catch (e) {
+    console.warn("Failed to fetch logo", e);
+    return null;
+  }
+};
+
+// Helper to wrap text into multiple lines within max width
+function splitTextToLines(doc, text, maxWidth, fontSize) {
+  doc.setFontSize(fontSize);
+  return doc.splitTextToSize(text, maxWidth);
+}
+
 export const generateInvoicePDF = async (invoice, returnBlob = false) => {
   const { jsPDF } = await import("jspdf");
   const doc = new jsPDF();
@@ -28,7 +61,6 @@ export const generateInvoicePDF = async (invoice, returnBlob = false) => {
   try {
     const response = await axios.get(`${API_BASE_URL}/api/company/info`);
     const data = response.data;
-
     if (!data || Object.keys(data).length === 0) {
       alert("Company information not found.");
       return;
@@ -46,37 +78,141 @@ export const generateInvoicePDF = async (invoice, returnBlob = false) => {
       accountNo: data.account_number || "Account No",
       ifsc: data.ifsc_code || "IFSC",
       branch: data.branch_name || "Branch",
+      logoUrl: getFullLogoUrl(data.company_logo),
     };
 
-    // ✅ Now call PDF drawing function AFTER company info is fetched
-    await drawPDF(companyInfo); // Pass invoice also if needed
+    // Fetch logo data URL (if any)
+    const logoDataUrl = companyInfo.logoUrl
+      ? await fetchLogoDataUrl(companyInfo.logoUrl)
+      : null;
+
+    await drawPDF(companyInfo, logoDataUrl);
   } catch (error) {
     console.error("Error fetching company info for PDF:", error);
   }
 
-  async function drawPDF(companyInfo) {
-    // Title
-    doc.setFont("helvetica", "bold").setFontSize(16);
-    const topMargin = 10;
-    const titleY = topMargin + 10;
+  async function drawPDF(companyInfo, logoDataUrl) {
+    // ----- HEADER SECTION -----
+    const leftMargin = 14;
+    const topMargin = 14;
+    const rightMargin = 14;
+    let headerHeight = 0;
 
-    doc.text("Tax Invoice", pageWidth / 2, titleY, { align: "center" });
+    // --- 1. LOGO INSIDE BOX ---
+    const logoBoxW = 22;
+    const logoBoxH = 22;
+    const logoBoxX = leftMargin;
+    const logoBoxY = topMargin;
 
-    // QR Code
+    // Draw logo box outline
+    doc.setDrawColor(180, 180, 180);
+    doc.setLineWidth(0.3);
+    doc.roundedRect(logoBoxX, logoBoxY, logoBoxW, logoBoxH, 0, 0, "D");
+
+    // Draw logo image inside box, maintaining aspect ratio
+    if (logoDataUrl) {
+      const img = new window.Image();
+      img.src = logoDataUrl;
+      await new Promise((resolve) => {
+        img.onload = () => {
+          const wr = logoBoxW / img.width;
+          const hr = logoBoxH / img.height;
+          const ratio = Math.min(wr, hr);
+          const imgW = img.width * ratio;
+          const imgH = img.height * ratio;
+          const imgX = logoBoxX + (logoBoxW - imgW) / 2;
+          const imgY = logoBoxY + (logoBoxH - imgH) / 2;
+          doc.addImage(logoDataUrl, "PNG", imgX, imgY, imgW, imgH);
+          resolve();
+        };
+        img.onerror = resolve;
+      });
+    }
+
+    // --- 2. COMPANY INFO LINES (centered and wrapped) ---
+    const titleFont = 14;
+    const infoFont = 10;
+    const maxInfoWidth = pageWidth - leftMargin - rightMargin - logoBoxW - 8; // space left for logo box + gap
+    let infoStartY = topMargin + 4;
+
+    // Wrap address lines
+    const addressLines = splitTextToLines(
+      doc,
+      companyInfo.address,
+      maxInfoWidth,
+      infoFont
+    );
+
+    // Company name and address lines for centered rendering
+    let companyInfoLines = [
+      { text: companyInfo.name, font: titleFont, bold: true },
+      ...addressLines.map((line) => ({
+        text: line,
+        font: infoFont,
+        bold: false,
+      })),
+    ];
+
+    // Print centered lines
+    let dy = 0;
+    companyInfoLines.forEach((line) => {
+      doc.setFont("helvetica", line.bold ? "bold" : "normal");
+      doc.setFontSize(line.font);
+      doc.text(line.text, pageWidth / 2 + logoBoxW / 2, infoStartY + dy, {
+        align: "center",
+        maxWidth: maxInfoWidth,
+      });
+      dy += line.font * 0.5; // reduced spacing, feel free to tweak multiplier
+    });
+
+    // Print GST and Mobile side by side below the above lines
+    const gstText = `GST: ${companyInfo.gstNumber}`;
+    const mobileText = `Mobile: ${companyInfo.mobile}`;
+    const gstMobileY = infoStartY + dy + 2; // 2 mm gap below last line
+
+    const rightMarginX = pageWidth - rightMargin;
+    const leftX = logoBoxX + logoBoxW + 8; // right after logo box
+    const rightX = rightMarginX;
+
+    doc.setFont("helvetica", "normal");
+    doc.setFontSize(infoFont);
+    doc.text(gstText, leftX, gstMobileY, { align: "left" });
+    doc.text(mobileText, rightX, gstMobileY, { align: "right" });
+
+    dy += infoFont * 0.7; // add height of this line for header height calc
+
+    // Determine total header height between logo box and text block
+    headerHeight = Math.max(logoBoxH, dy + 1);
+
+    const afterHeaderY = topMargin + headerHeight + 2;
+
+    // --- 3. HORIZONTAL LINE (full page width without margins) ---
+    doc.setDrawColor(80, 80, 80);
+    doc.setLineWidth(0.1);
+    doc.line(10, afterHeaderY, pageWidth - 10, afterHeaderY);
+
+    // --- Content Start Y ---
+    const contentStartY = afterHeaderY + 8;
+
+    // --- Tax Invoice Title ---
+    doc.setFont("helvetica", "bold").setFontSize(12);
+    doc.text("Tax Invoice", pageWidth / 2, contentStartY, { align: "center" });
+
+    // --- QR Code ---
     try {
       const qrData = invoice.qr_string?.trim() || "https://example.com";
       const qrImage = await QRCode.toDataURL(qrData, { margin: 0, width: 80 });
       doc.setFontSize(10);
-      doc.text("e-Invoice", 185, 20, { align: "right" });
-      doc.addImage(qrImage, "PNG", 165, 25, 30, 30);
+      doc.text("e-Invoice", 192, contentStartY + 2, { align: "right" });
+      doc.addImage(qrImage, "PNG", 175, contentStartY + 7, 20, 20);
     } catch (err) {
       console.warn("QR Code generation failed:", err);
     }
 
-    // IRN Section
+    // --- IRN Section ---
     const labelX = 14,
       valueX = 35,
-      irnYStart = 45,
+      irnYStart = contentStartY + 15,
       lineHeight = 5;
     doc.setFont("helvetica", "bold").setFontSize(9);
     doc.text("IRN:", labelX, irnYStart);
@@ -90,9 +226,10 @@ export const generateInvoicePDF = async (invoice, returnBlob = false) => {
       irnYStart + lineHeight * 2
     );
 
-    // Company Info & Invoice Details
+    // --- Company & Invoice Table ---
+    const firstTableStartY = irnYStart + lineHeight * 2 + 4;
     autoTable(doc, {
-      startY: irnYStart + 15,
+      startY: firstTableStartY,
       margin: { left: 14, right: 14 },
       body: [
         [
@@ -124,7 +261,7 @@ Date: ${invoice.invoice_date || "-"}`,
       tableLineWidth: 0.4,
     });
 
-    // Buyer/Consignee Info
+    // --- Buyer/Consignee Table ---
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 4,
       margin: { left: 14, right: 14 },
@@ -136,19 +273,23 @@ Date: ${invoice.invoice_date || "-"}`,
         [
           {
             content: `${invoice.customer_name}
+
 ${invoice.address}
 State: ${invoice.state}, Code: ${invoice.state_code}
 Mobile: ${invoice.customer_mobile}
 GST No: ${invoice.gst_number}
+Vehicle No: ${invoice.vehicle_number}
 Place of Supply: ${invoice.place_of_supply}`,
             styles: { fontSize: 10 },
           },
           {
             content: `${invoice.customer_name}
+
 ${invoice.address}
 State: ${invoice.state}, Code: ${invoice.state_code}
 Mobile: ${invoice.customer_mobile}
 GST No: ${invoice.gst_number}
+Vehicle No: ${invoice.vehicle_number}
 Place of Supply: ${invoice.place_of_supply}`,
             styles: { fontSize: 10 },
           },
@@ -160,18 +301,9 @@ Place of Supply: ${invoice.place_of_supply}`,
       tableLineWidth: 0.4,
     });
 
-    // Products Table
+    // --- Products Table ---
     const headers = [
-      [
-        "S.N",
-        "Description",
-        "HSN",
-        "Qty",
-        "Discount(%)",
-        "Rate",
-        "Per",
-        "Amount",
-      ],
+      ["S.N", "Description", "HSN", "Qty", "Disc(%)", "Rate", "Per", "Amount"],
     ];
     const data = (invoice.items || []).map((item, i) => [
       i + 1,
@@ -196,11 +328,11 @@ Place of Supply: ${invoice.place_of_supply}`,
         textColor: "#313030",
       },
       columnStyles: {
-        0: { cellWidth: 12 },
-        1: { cellWidth: 47 },
-        2: { cellWidth: 16 },
-        3: { cellWidth: 20 },
-        4: { cellWidth: 20, halign: "right" },
+        0: { cellWidth: 10 },
+        1: { cellWidth: 45 },
+        2: { cellWidth: 23 },
+        3: { cellWidth: 18 },
+        4: { cellWidth: 18, halign: "right" },
         5: { cellWidth: 25, halign: "right" },
         6: { cellWidth: 15, halign: "center" },
         7: { cellWidth: 28, halign: "right", fontStyle: "bold" },
@@ -209,7 +341,7 @@ Place of Supply: ${invoice.place_of_supply}`,
 
     const afterProductY = doc.lastAutoTable.finalY + 2;
 
-    // Summary Table (new layout)
+    // --- Summary Table ---
     autoTable(doc, {
       startY: afterProductY,
       margin: { left: 14, right: 14 },
@@ -269,14 +401,14 @@ Place of Supply: ${invoice.place_of_supply}`,
       theme: "grid",
       styles: { fontSize: 10, cellPadding: 2 },
       columnStyles: {
-        6: { cellWidth: 60 }, // Label column
-        7: { cellWidth: 35 }, // Value column
+        6: { cellWidth: 60 },
+        7: { cellWidth: 35 },
       },
       tableLineColor: 100,
       tableLineWidth: 0.4,
     });
 
-    // Amount in Words
+    // --- Amount in Words ---
     autoTable(doc, {
       startY: doc.lastAutoTable.finalY + 2,
       margin: { left: 14, right: 14 },
@@ -310,29 +442,18 @@ Place of Supply: ${invoice.place_of_supply}`,
       tableLineWidth: 0.4,
     });
 
-    // Constants
+    // --- Bank Details Section (Page Safe) ---
     const sectionWidth = pageWidth - 28;
-    const marginLeft = 14;
-    const marginRight = 14;
-
-    // Function to estimate height of an autoTable section
-    const estimateTableHeight = (lineCount, lineHeight = 5, padding = 8) => {
-      return lineCount * lineHeight + padding; // rough estimate: total content height + padding
-    };
-
-    // ────────────────────── Bank Details Section (Page-Safe) ──────────────────────
     let bankY = doc.lastAutoTable.finalY + 4;
-    const bankLineCount = 7; // Title + 6 lines of info
-    const bankHeight = estimateTableHeight(bankLineCount);
-
+    const bankLineCount = 7;
+    const bankHeight = bankLineCount * 5 + 8;
     if (bankY + bankHeight > pageHeight - 30) {
       doc.addPage();
-      bankY = 20; // reset on new page
+      bankY = 20;
     }
-
     autoTable(doc, {
       startY: bankY,
-      margin: { left: marginLeft, right: marginRight },
+      margin: { left: 14, right: 14 },
       body: [
         [
           {
@@ -357,19 +478,17 @@ Place of Supply: ${invoice.place_of_supply}`,
       styles: { fontSize: 10, cellPadding: 2 },
     });
 
-    // ────────────────────── Declaration Section (Page-Safe) ──────────────────────
+    // --- Declaration Section (Page Safe) ---
     let declarationY = doc.lastAutoTable.finalY + 4;
-    const declarationLineCount = 7; // "Declaration:" + ~6 text lines
-    const declarationHeight = estimateTableHeight(declarationLineCount);
-
+    const declarationLineCount = 7;
+    const declarationHeight = declarationLineCount * 5 + 8;
     if (declarationY + declarationHeight > pageHeight - 30) {
       doc.addPage();
       declarationY = 20;
     }
-
     autoTable(doc, {
       startY: declarationY,
-      margin: { left: marginLeft, right: marginRight },
+      margin: { left: 14, right: 14 },
       body: [
         [
           {
@@ -394,54 +513,37 @@ Place of Supply: ${invoice.place_of_supply}`,
       styles: { fontSize: 9, cellPadding: 2 },
     });
 
-    // ────────────────────── Signature Box (Smart Positioning) ──────────────────────
+    // --- Signature Box (Smart Positioning) ---
     let signatureY = doc.lastAutoTable.finalY + 10;
     const boxWidth = 80;
     const boxHeight = 35;
     const boxX = pageWidth - 14 - boxWidth;
-
-    // If content already filled 70% of page, move to new page
     if (signatureY + boxHeight > pageHeight * 0.7) {
       doc.addPage();
-      signatureY = 20; // top margin after new page
+      signatureY = 20;
     }
-
-    // Draw rounded signature box
-    doc.setDrawColor(60, 60, 60); // dark gray border
+    doc.setDrawColor(60, 60, 60);
     doc.setLineWidth(0.2);
     doc.roundedRect(boxX, signatureY, boxWidth, boxHeight, 0, 0);
-
-    // "For Company Name" - centered at top
     doc.setFont("helvetica", "bold").setFontSize(10);
     doc.text(`For ${companyInfo.name}`, boxX + boxWidth / 2, signatureY + 10, {
       align: "center",
     });
-
-    // Signature line
-    doc.setDrawColor(180); // lighter gray
+    doc.setDrawColor(180);
     doc.line(boxX + 10, signatureY + 22, boxX + boxWidth - 10, signatureY + 22);
-
-    // "Authorized Signatory" - below the line
     doc.text("Authorized Signatory", boxX + boxWidth / 2, signatureY + 30, {
       align: "center",
     });
 
-    // ────────────────────── Footer Line + Page Number ──────────────────────
+    // --- Footer on Each Page ---
     const pageCount = doc.internal.getNumberOfPages();
-
     for (let i = 1; i <= pageCount; i++) {
       doc.setPage(i);
-
-      // Draw outer border on each page
-      doc.setDrawColor(80); // soft dark grey
+      doc.setDrawColor(80);
       doc.setLineWidth(0.3);
-      doc.rect(10, 10, pageWidth - 20, pageHeight - 18); // 10mm margin from each side
-
-      // Footer line
+      doc.rect(10, 10, pageWidth - 20, pageHeight - 18);
       doc.setDrawColor(180).setLineWidth(0.5);
-      doc.line(14, pageHeight - 18, pageWidth - 14, pageHeight - 18);
-
-      // Page number and invoice no
+      doc.line(14, pageHeight - 15, pageWidth - 14, pageHeight - 15);
       doc.setFontSize(8).setTextColor(100);
       doc.text(
         `Page ${i} of ${pageCount} | Invoice No: ${
@@ -453,14 +555,11 @@ Place of Supply: ${invoice.place_of_supply}`,
       );
     }
 
-    // After building the document
-    const pdfBlob = new Blob([doc.output("arraybuffer")], { type: "application/pdf" });
-
-if (returnBlob) {
-  return pdfBlob; // Now FormData will accept it!
-}
-
-    // Save PDF
+    // --- Deliver PDF ---
+    const pdfBlob = new Blob([doc.output("arraybuffer")], {
+      type: "application/pdf",
+    });
+    if (returnBlob) return pdfBlob;
     doc.save(`Invoice_${invoice.invoice_number || "Bill"}.pdf`);
   }
 };
